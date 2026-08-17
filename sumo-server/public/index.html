@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scream Sumo</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <div id="ui">
+    <h1>🤼 Scream Sumo</h1>
+    <p class="subtitle">Кричи в микрофон — толкай соперника!</p>
+
+    <div class="panel">
+      <h2>Создать комнату</h2>
+      <button id="createBtn">Создать</button>
+      <div id="roomCodeBox" class="hidden">
+        <p>Код комнаты, скажи его сопернику:</p>
+        <div id="roomCode" class="code"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Присоединиться</h2>
+      <input id="codeInput" placeholder="Введите код комнаты" maxlength="5">
+      <button id="joinBtn">Войти</button>
+    </div>
+
+    <p id="status"></p>
+  </div>
+
+  <div id="gameContainer" class="hidden"></div>
+
+  <!-- Phaser: лежит локально в /lib -->
+  <script src="lib/phaser.min.js"></script>
+  <!-- socket.io-client раздаётся автоматически самим сервером socket.io, никаких внешних CDN -->
+  <script src="/socket.io/socket.io.js"></script>
+
+  <script src="main.js"></script>
+</body>
+</html>
