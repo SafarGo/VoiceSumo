@@ -13,7 +13,7 @@ const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// rooms: { code: { players: [socketId, socketId] } }
+// rooms: { code: { players: [socketId, socketId], ready: Set<socketId> } }
 const rooms = {};
 
 function makeCode() {
@@ -24,7 +24,7 @@ io.on('connection', (socket) => {
   socket.on('create-room', () => {
     let code = makeCode();
     while (rooms[code]) code = makeCode(); // на случай коллизии
-    rooms[code] = { players: [socket.id] };
+    rooms[code] = { players: [socket.id], ready: new Set() };
     socket.join(code);
     socket.data.room = code;
     socket.data.index = 0;
@@ -46,7 +46,18 @@ io.on('connection', (socket) => {
     socket.data.room = code;
     socket.data.index = 1;
     socket.emit('room-joined', { code, index: 1 });
-    io.to(code).emit('opponent-ready');
+    io.to(code).emit('opponent-joined');
+  });
+
+  socket.on('mic-ready', () => {
+    const code = socket.data.room;
+    const room = rooms[code];
+    if (!room) return;
+    room.ready.add(socket.id);
+    socket.to(code).emit('peer-mic-ready');
+    if (room.players.length === 2 && room.ready.size === 2) {
+      io.to(code).emit('start-game');
+    }
   });
 
   socket.on('state', (data) => {

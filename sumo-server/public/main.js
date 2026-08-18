@@ -35,6 +35,7 @@ let players = [];
 let lastDashTime = 0;
 let gameEnded = false;
 let volumeText = null;
+let networkInterval = null;
 
 // =========================================================
 //  UI / DOM
@@ -49,15 +50,28 @@ const codeInputEl = document.getElementById('codeInput');
 document.getElementById('createBtn').addEventListener('click', createRoom);
 document.getElementById('joinBtn').addEventListener('click', joinRoom);
 
+let micGranted = false;
+let micFlowStarted = false;
+let opponentJoined = false;
+let opponentMicReady = false;
+
 function connectSocket() {
   if (socket) return socket;
   socket = io(); // подключаемся к тому же серверу, с которого загружена страница
   socket.on('connect_error', () => {
     statusEl.textContent = 'Не удалось подключиться к серверу';
   });
-  socket.on('opponent-ready', () => {
-    statusEl.textContent = 'Соперник подключён! Запуск игры...';
-    setTimeout(startGame, 400);
+  socket.on('opponent-joined', () => {
+    opponentJoined = true;
+    updateLobbyStatus();
+    beginMicFlow();
+  });
+  socket.on('peer-mic-ready', () => {
+    opponentMicReady = true;
+    updateLobbyStatus();
+  });
+  socket.on('start-game', () => {
+    setTimeout(startGame, 300);
   });
   socket.on('join-error', (msg) => {
     statusEl.textContent = msg;
@@ -74,6 +88,32 @@ function connectSocket() {
   return socket;
 }
 
+function updateLobbyStatus() {
+  if (!opponentJoined) {
+    statusEl.textContent = 'Комната создана. Жду второго игрока...';
+  } else if (!micGranted) {
+    statusEl.textContent = 'Разреши доступ к микрофону во всплывающем окне браузера...';
+  } else if (!opponentMicReady) {
+    statusEl.textContent = 'Твой микрофон готов. Жду, пока соперник разрешит свой...';
+  } else {
+    statusEl.textContent = 'Оба готовы! Запуск игры...';
+  }
+}
+
+async function beginMicFlow() {
+  if (micFlowStarted) return;
+  micFlowStarted = true;
+  updateLobbyStatus();
+  const ok = await initMic();
+  if (ok) {
+    micGranted = true;
+    socket.emit('mic-ready');
+    updateLobbyStatus();
+  } else {
+    statusEl.textContent = 'Доступ к микрофону не получен. Разреши его в настройках браузера и обнови страницу.';
+  }
+}
+
 function createRoom() {
   const s = connectSocket();
   s.emit('create-room');
@@ -81,7 +121,8 @@ function createRoom() {
     myIndex = index;
     roomCodeEl.textContent = code;
     roomCodeBoxEl.classList.remove('hidden');
-    statusEl.textContent = 'Комната создана. Жду второго игрока...';
+    updateLobbyStatus();
+    beginMicFlow(); // хост запрашивает микрофон сразу, не дожидаясь второго игрока
   });
 }
 
@@ -95,7 +136,9 @@ function joinRoom() {
   s.emit('join-room', code);
   s.once('room-joined', ({ index }) => {
     myIndex = index;
-    statusEl.textContent = 'Заходим в комнату...';
+    opponentJoined = true;
+    updateLobbyStatus();
+    beginMicFlow();
   });
 }
 
@@ -104,16 +147,23 @@ function joinRoom() {
 // =========================================================
 async function initMic() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+    });
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const source = audioCtx.createMediaStreamSource(stream);
     analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 512;
+    analyser.fftSize = 256;
     micData = new Uint8Array(analyser.frequencyBinCount);
     source.connect(analyser);
     requestAnimationFrame(sampleMic);
+    return true;
   } catch (e) {
-    alert('Не удалось получить доступ к микрофону: ' + e.message);
+    return false;
   }
 }
 
@@ -136,7 +186,6 @@ function sampleMic() {
 function startGame() {
   uiEl.classList.add('hidden');
   gameContainerEl.classList.remove('hidden');
-  initMic();
 
   const config = {
     type: Phaser.AUTO,
@@ -186,18 +235,31 @@ function create() {
 
   volumeText = this.add.text(10, 10, 'Громкость: 0%', { font: '16px Arial', fill: '#fff' });
   this.add.text(10, 32, 'Сумоист крутится сам — кричи в микрофон, чтобы рвануть вперёд', { font: '13px Arial', fill: '#999' });
+
+  // сеть отправляется по таймеру (30 раз/сек), а не привязана к частоте кадров устройства —
+  // так телефон с 120Hz-экраном не заваливает сервер лишними сообщениями
+  networkInterval = setInterval(() => {
+    if (gameEnded || !socket || !players.length) return;
+    const me = players[myIndex];
+    socket.emit('state', { x: me.x, y: me.y, rotation: me.rotation });
+  }, 33);
 }
 
-function update(time) {
+function update(time, delta) {
   if (gameEnded) return;
+
+  // нормализуем к базовой частоте 60 кадров/сек, чтобы скорость вращения
+  // и торможение были одинаковыми на экране с 60Hz и с 120Hz
+  const dt = delta / (1000 / 60);
 
   const me = players[myIndex];
   const opponent = players[myIndex === 0 ? 1 : 0];
 
-  me.rotation += SPIN_SPEED;
+  me.rotation += SPIN_SPEED * dt;
   const facingAngle = me.rotation;
-  me.body.velocity.x *= DRAG;
-  me.body.velocity.y *= DRAG;
+  const dragFactor = Math.pow(DRAG, dt);
+  me.body.velocity.x *= dragFactor;
+  me.body.velocity.y *= dragFactor;
 
   if (currentVolume > MIN_SCREAM_VOLUME && time - lastDashTime > DASH_COOLDOWN_MS) {
     lastDashTime = time;
@@ -225,16 +287,13 @@ function update(time) {
     if (socket) socket.emit('end', { winner });
   }
 
-  if (socket) {
-    socket.emit('state', { x: me.x, y: me.y, rotation: me.rotation });
-  }
-
   volumeText.setText('Громкость: ' + Math.round(currentVolume * 100) + '%');
 }
 
 function finishGame(winner) {
   if (gameEnded) return;
   gameEnded = true;
+  if (networkInterval) clearInterval(networkInterval);
   scene.physics.pause();
   const label = winner === 1 ? 'Игрок 1 (синий)' : 'Игрок 2 (красный)';
   scene.add.text(
